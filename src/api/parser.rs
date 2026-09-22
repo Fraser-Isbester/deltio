@@ -5,6 +5,9 @@ use crate::pubsub_proto::{
     DeadLetterPolicy as DeadLetterPolicyProto, PubsubMessage, PushConfig as PushConfigProto,
     RetryPolicy as RetryPolicyProto,
 };
+use crate::subscriptions::filter::{
+    FilterExpr, MAX_FILTER_LENGTH_BYTES, parse_filter as parse_filter_expr,
+};
 use crate::subscriptions::{
     AckDeadline, AckId, AckIdParseError, DeadLetterPolicy, DeadlineModification, PushConfig,
     PushConfigOidcToken, RetryPolicy, SubscriptionName,
@@ -212,4 +215,24 @@ pub(crate) fn parse_topic_message(message_proto: PubsubMessage) -> TopicMessage 
     };
 
     TopicMessage::new(data, attributes)
+}
+
+/// Parses a subscription filter expression.
+pub(crate) fn parse_filter(raw_value: &str) -> Result<Option<(String, FilterExpr)>, Status> {
+    let trimmed = raw_value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    if trimmed.len() > MAX_FILTER_LENGTH_BYTES {
+        return Err(Status::invalid_argument(format!(
+            "Filter expression exceeds maximum length of {MAX_FILTER_LENGTH_BYTES} bytes (actual: {})",
+            trimmed.len()
+        )));
+    }
+
+    let expr = parse_filter_expr(trimmed)
+        .map_err(|e| Status::invalid_argument(format!("Invalid filter expression: {e}")))?;
+
+    Ok(Some((trimmed.to_string(), expr)))
 }

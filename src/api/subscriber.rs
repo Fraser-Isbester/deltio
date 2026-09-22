@@ -76,13 +76,17 @@ impl Subscriber for SubscriberService {
             .as_ref()
             .map(parser::parse_dead_letter_policy)
             .transpose()?;
-        let subscription_info = SubscriptionInfo::new(
+        let filter = parser::parse_filter(&request.filter)?;
+        let mut subscription_info = SubscriptionInfo::new(
             subscription_name.clone(),
             ack_deadline,
             push_config,
             retry_policy,
             dead_letter_policy,
         );
+        if let Some((filter_str, compiled)) = filter {
+            subscription_info = subscription_info.with_filter(filter_str, compiled);
+        }
 
         let topic = self
             .topic_manager
@@ -672,7 +676,7 @@ fn map_to_subscription_resource(
         labels: Default::default(),
         enable_message_ordering: false,
         expiration_policy: None,
-        filter: Default::default(),
+        filter: info.filter.clone().unwrap_or_default(),
         dead_letter_policy: info
             .dead_letter_policy
             .as_ref()

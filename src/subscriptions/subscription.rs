@@ -52,6 +52,12 @@ pub struct SubscriptionInfo {
 
     /// If specified, messages exceeding max delivery attempts are forwarded to a dead letter topic.
     pub dead_letter_policy: Option<DeadLetterPolicy>,
+
+    /// If specified, an expression to filter messages by attributes.
+    pub filter: Option<String>,
+
+    /// The compiled filter expression, if any.
+    pub compiled_filter: Option<Arc<crate::subscriptions::filter::FilterExpr>>,
 }
 
 /// Configuration for push subscriptions.
@@ -247,7 +253,20 @@ impl SubscriptionInfo {
             push_config,
             retry_policy,
             dead_letter_policy,
+            filter: None,
+            compiled_filter: None,
         }
+    }
+
+    /// Sets the filter expression.
+    pub fn with_filter(
+        mut self,
+        filter: String,
+        compiled: crate::subscriptions::filter::FilterExpr,
+    ) -> Self {
+        self.filter = Some(filter);
+        self.compiled_filter = Some(Arc::new(compiled));
+        self
     }
 
     /// Creates a new `SubscriptionInfo` with default values.
@@ -258,6 +277,8 @@ impl SubscriptionInfo {
             push_config: None,
             retry_policy: None,
             dead_letter_policy: None,
+            filter: None,
+            compiled_filter: None,
         }
     }
 }

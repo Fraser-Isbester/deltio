@@ -944,3 +944,146 @@ async fn test_dlq_messages_forwarded_after_max_delivery_attempts_expiry() {
     drop(inbound);
     server.dispose().await;
 }
+
+#[allow(deprecated)]
+#[tokio::test]
+async fn test_subscription_filtering() {
+    let mut server = TestHost::start().await.unwrap();
+
+    let topic_name = TopicName::new("test", "filter-topic");
+    server.create_topic_with_name(&topic_name).await;
+
+    // 1. Subscription with exact match + inequality filter
+    let sub1_name = SubscriptionName::new("test", "sub-region-dev");
+    let mut sub1_proto = test_helpers::map_to_subscription_resource(&sub1_name, &topic_name);
+    sub1_proto.filter = "attributes.region = \"us-central1\" AND attributes.environment != \"prod\"".into();
+    let created1 = server
+        .subscriber
+        .create_subscription(sub1_proto)
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(created1.filter, "attributes.region = \"us-central1\" AND attributes.environment != \"prod\"");
+
+    // Verify GetSubscription returns the filter
+    let got1 = server
+        .subscriber
+        .get_subscription(deltio::pubsub_proto::GetSubscriptionRequest {
+            subscription: sub1_name.to_string(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(got1.filter, created1.filter);
+
+    // 2. Subscription with prefix filter
+    let sub2_name = SubscriptionName::new("test", "sub-prefix");
+    let mut sub2_proto = test_helpers::map_to_subscription_resource(&sub2_name, &topic_name);
+    sub2_proto.filter = "hasPrefix(attributes.tag, \"event-\")".into();
+    server
+        .subscriber
+        .create_subscription(sub2_proto)
+        .await
+        .unwrap();
+
+    // 3. Subscription with NO filter (receives everything)
+    let sub3_name = SubscriptionName::new("test", "sub-unfiltered");
+    server
+        .create_subscription_with_name(&topic_name, &sub3_name)
+        .await;
+
+    // 4. Test invalid filter rejection
+    let invalid_sub_name = SubscriptionName::new("test", "sub-invalid");
+    let mut invalid_proto = test_helpers::map_to_subscription_resource(&invalid_sub_name, &topic_name);
+    invalid_proto.filter = "attributes:a and attributes:b".into(); // lowercase 'and' is invalid
+    let err = server
+        .subscriber
+        .create_subscription(invalid_proto)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+    // Helper to create PubsubMessage with attributes
+    let make_msg = |data: &'static str, attrs: Vec<(&'static str, &'static str)>| {
+        let mut attributes = std::collections::HashMap::new();
+        for (k, v) in attrs {
+            attributes.insert(k.to_string(), v.to_string());
+        }
+        PubsubMessage {
+            data: data.as_bytes().to_vec(),
+            attributes,
+            ..Default::default()
+        }
+    };
+
+    // Publish 4 messages
+    server
+        .publisher
+        .publish(PublishRequest {
+            topic: topic_name.to_string(),
+            messages: vec![
+                // Msg 1: Matches sub1 and sub3
+                make_msg("msg1", vec![("region", "us-central1"), ("environment", "dev"), ("tag", "other")]),
+                // Msg 2: Matches sub2 and sub3
+                make_msg("msg2", vec![("region", "us-central1"), ("environment", "prod"), ("tag", "event-a")]),
+                // Msg 3: Matches sub2 and sub3
+                make_msg("msg3", vec![("region", "europe-west1"), ("environment", "dev"), ("tag", "event-b")]),
+                // Msg 4: Matches sub3 only
+                make_msg("msg4", vec![("region", "europe-west1"), ("environment", "prod"), ("tag", "misc")]),
+            ],
+        })
+        .await
+        .unwrap();
+
+    // Pull from sub1 (should only have msg1)
+    let pull1 = server
+        .subscriber
+        .pull(PullRequest {
+            subscription: sub1_name.to_string(),
+            max_messages: 10,
+            return_immediately: false,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(pull1.received_messages.len(), 1);
+    assert_eq!(
+        String::from_utf8(pull1.received_messages[0].message.as_ref().unwrap().data.clone()).unwrap(),
+        "msg1"
+    );
+
+    // Pull from sub2 (should have msg2 and msg3)
+    let pull2 = server
+        .subscriber
+        .pull(PullRequest {
+            subscription: sub2_name.to_string(),
+            max_messages: 10,
+            return_immediately: false,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(pull2.received_messages.len(), 2);
+    let sub2_msgs: Vec<_> = pull2
+        .received_messages
+        .iter()
+        .map(|m| String::from_utf8(m.message.as_ref().unwrap().data.clone()).unwrap())
+        .collect();
+    assert_eq!(sub2_msgs, vec!["msg2", "msg3"]);
+
+    // Pull from sub3 (should have all 4 messages)
+    let pull3 = server
+        .subscriber
+        .pull(PullRequest {
+            subscription: sub3_name.to_string(),
+            max_messages: 10,
+            return_immediately: false,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(pull3.received_messages.len(), 4);
+
+    server.dispose().await;
+}
+

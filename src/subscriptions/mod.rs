@@ -13,10 +13,12 @@ mod subscription;
 mod subscription_actor;
 pub mod subscription_manager;
 mod subscription_name;
+pub mod filter;
 
 pub use ack_id::*;
 pub use deadline_modification::*;
 pub use errors::*;
+pub use filter::*;
 pub use policies::*;
 pub use pulled_message::*;
 pub use stats::*;

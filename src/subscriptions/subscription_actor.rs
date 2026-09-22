@@ -207,7 +207,20 @@ impl SubscriptionActor {
             return;
         }
 
-        self.backlog.append(new_messages.iter().cloned());
+        let messages_to_enqueue: Vec<_> = match &self.info.compiled_filter {
+            Some(filter) => new_messages
+                .iter()
+                .filter(|m| filter.matches(m.attributes.as_ref()))
+                .cloned()
+                .collect(),
+            None => new_messages.iter().cloned().collect(),
+        };
+
+        if messages_to_enqueue.is_empty() {
+            return;
+        }
+
+        self.backlog.append(messages_to_enqueue);
         self.observer.notify_new_messages_available();
     }
 
