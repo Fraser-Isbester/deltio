@@ -8,6 +8,8 @@ use crate::topics::{
     CreateTopicError, DeleteError, GetTopicError, ListSubscriptionsError, ListTopicsError,
     PublishMessagesError,
 };
+use crate::schemas::schema_manager::{SchemaManager, SchemaManagerError};
+use crate::schemas::schema_name::SchemaName;
 use crate::tracing::ActivitySpan;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,11 +17,15 @@ use tonic::{Request, Response, Status};
 
 pub struct PublisherService {
     pub topic_manager: Arc<TopicManager>,
+    pub schema_manager: Arc<SchemaManager>,
 }
 
 impl PublisherService {
-    pub fn new(topic_manager: Arc<TopicManager>) -> Self {
-        Self { topic_manager }
+    pub fn new(topic_manager: Arc<TopicManager>, schema_manager: Arc<SchemaManager>) -> Self {
+        Self {
+            topic_manager,
+            schema_manager,
+        }
     }
 
     /// Gets the internal topic.
@@ -44,8 +50,24 @@ impl Publisher for PublisherService {
         let topic_name = parser::parse_topic_name(&request.name)?;
         let topic_name_str = topic_name.to_string();
 
-        self.topic_manager
-            .create_topic(topic_name)
+        if let Some(settings) = &request.schema_settings {
+            if !settings.schema.is_empty() {
+                let parsed_schema_name = SchemaName::try_parse(&settings.schema)
+                    .ok_or_else(|| Status::invalid_argument("Invalid schema name in schema_settings"))?;
+                self.schema_manager
+                    .get_schema(&parsed_schema_name, SchemaView::Basic)
+                    .map_err(|e| match e {
+                        SchemaManagerError::NotFound => {
+                            Status::not_found(format!("Schema not found: {}", settings.schema))
+                        }
+                        _ => Status::invalid_argument(e.to_string()),
+                    })?;
+            }
+        }
+
+        let topic = self
+            .topic_manager
+            .create_topic_with_schema(topic_name, request.schema_settings.clone())
             .map_err(|e| match e {
                 CreateTopicError::AlreadyExists => Status::already_exists("Topic already exists"),
                 CreateTopicError::Closed => conflict(),
@@ -57,7 +79,7 @@ impl Publisher for PublisherService {
             labels: HashMap::default(),
             message_retention_duration: None,
             satisfies_pzs: false,
-            schema_settings: None,
+            schema_settings: topic.info.schema_settings.clone(),
             message_storage_policy: None,
         };
 
@@ -85,11 +107,56 @@ impl Publisher for PublisherService {
         let topic = self.get_topic_internal(&topic_name).await?;
 
         let message_count = request.messages.len();
-        let messages = request
-            .messages
-            .into_iter()
-            .map(parser::parse_topic_message)
-            .collect::<Vec<_>>();
+        let mut messages = Vec::with_capacity(message_count);
+
+        if let Some(schema_settings) = &topic.info.schema_settings {
+            let (validator, active_revision_id) = self
+                .schema_manager
+                .resolve_validator(&schema_settings.schema)
+                .ok_or_else(|| {
+                    Status::failed_precondition(format!(
+                        "Schema not found: {}",
+                        schema_settings.schema
+                    ))
+                })?;
+
+            let encoding =
+                Encoding::try_from(schema_settings.encoding).unwrap_or(Encoding::Unspecified);
+            if encoding == Encoding::Unspecified {
+                return Err(Status::invalid_argument("Schema encoding must be set on topic"));
+            }
+
+            let encoding_str = match encoding {
+                Encoding::Binary => "BINARY",
+                Encoding::Json => "JSON",
+                Encoding::Unspecified => "UNSPECIFIED",
+            };
+
+            let parsed_name = SchemaName::try_parse(&schema_settings.schema)
+                .ok_or_else(|| Status::invalid_argument("Invalid schema name in schema settings"))?;
+            let canonical_schema_name = parsed_name.name_without_revision();
+
+            for raw_msg in request.messages {
+                validator
+                    .validate(&raw_msg.data, encoding)
+                    .map_err(|e| Status::invalid_argument(format!("Message failed schema validation: {e}")))?;
+
+                let mut topic_msg = parser::parse_topic_message(raw_msg);
+                let attrs = topic_msg.attributes.get_or_insert_with(HashMap::new);
+                attrs.insert("googclient_schemaname".into(), canonical_schema_name.clone());
+                attrs.insert("googclient_schemaencoding".into(), encoding_str.into());
+                attrs.insert(
+                    "googclient_schemarevisionid".into(),
+                    active_revision_id.clone(),
+                );
+
+                messages.push(topic_msg);
+            }
+        } else {
+            for raw_msg in request.messages {
+                messages.push(parser::parse_topic_message(raw_msg));
+            }
+        }
 
         let result = topic
             .publish_messages(messages)
@@ -129,7 +196,7 @@ impl Publisher for PublisherService {
             labels: Default::default(),
             message_storage_policy: None,
             kms_key_name: "".to_string(),
-            schema_settings: None,
+            schema_settings: topic.info.schema_settings.clone(),
             satisfies_pzs: false,
             message_retention_duration: None,
         }))
@@ -159,7 +226,7 @@ impl Publisher for PublisherService {
                 labels: HashMap::default(),
                 message_storage_policy: None,
                 kms_key_name: "".to_string(),
-                schema_settings: None,
+                schema_settings: topic.info.schema_settings.clone(),
                 satisfies_pzs: false,
                 message_retention_duration: None,
             })

@@ -3,14 +3,18 @@ mod collections;
 pub mod paging;
 pub mod pubsub_proto;
 pub mod push;
+pub mod schemas;
 pub mod subscriptions;
 mod time;
 pub mod topics;
 mod tracing;
 
+use crate::api::schema::SchemaServiceImpl;
 use crate::api::subscriber::SubscriberService;
 use crate::pubsub_proto::publisher_server::PublisherServer;
+use crate::pubsub_proto::schema_service_server::SchemaServiceServer;
 use crate::pubsub_proto::subscriber_server::SubscriberServer;
+use crate::schemas::schema_manager::SchemaManager;
 use crate::subscriptions::subscription_manager::SubscriptionManager;
 use crate::topics::topic_manager::TopicManager;
 use api::publisher::PublisherService;
@@ -42,6 +46,9 @@ pub struct Deltio {
 
     /// The subscription manager, which manages Pub/Sub subscriptions.
     subscription_manager: Arc<SubscriptionManager>,
+
+    /// The schema manager, which manages Pub/Sub schemas.
+    schema_manager: Arc<SchemaManager>,
 }
 
 impl Deltio {
@@ -49,9 +56,11 @@ impl Deltio {
     pub fn new() -> Self {
         let push_subscriptions_registry = PushSubscriptionsRegistry::new();
         let topic_manager = Arc::new(TopicManager::new());
+        let schema_manager = Arc::new(SchemaManager::new());
         Self {
             push_subscriptions_registry: push_subscriptions_registry.clone(),
             topic_manager: Arc::clone(&topic_manager),
+            schema_manager,
             subscription_manager: Arc::new(SubscriptionManager::new(
                 push_subscriptions_registry,
                 topic_manager,
@@ -59,18 +68,28 @@ impl Deltio {
         }
     }
 
+    /// Returns a reference to the schema manager.
+    pub fn schema_manager(&self) -> &Arc<SchemaManager> {
+        &self.schema_manager
+    }
+
     /// Creates a Tonic gRPC server builder with the
     /// Pub/Sub gRPC services registered.
     pub fn server_builder(&self) -> Router {
-        let publisher_service = PublisherService::new(Arc::clone(&self.topic_manager));
+        let publisher_service = PublisherService::new(
+            Arc::clone(&self.topic_manager),
+            Arc::clone(&self.schema_manager),
+        );
         let subscriber_service = SubscriberService::new(
             Arc::clone(&self.topic_manager),
             Arc::clone(&self.subscription_manager),
         );
+        let schema_service = SchemaServiceImpl::new(Arc::clone(&self.schema_manager));
 
         Server::builder()
             .add_service(PublisherServer::new(publisher_service))
             .add_service(SubscriberServer::new(subscriber_service))
+            .add_service(SchemaServiceServer::new(schema_service))
     }
 
     /// Creates the push loop.

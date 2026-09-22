@@ -16,6 +16,9 @@ pub struct Topic {
     /// Name of the topic.
     pub name: TopicName,
 
+    /// Information about the topic.
+    pub info: TopicInfo,
+
     /// The internal ID of the topic which is an auto-incrementing
     /// number.
     pub internal_id: u32,
@@ -29,15 +32,38 @@ pub struct Topic {
 pub struct TopicInfo {
     /// The name of the topic.
     pub name: TopicName,
+
+    /// Schema settings for message validation.
+    pub schema_settings: Option<crate::pubsub_proto::SchemaSettings>,
+}
+
+impl TopicInfo {
+    /// Creates a new `TopicInfo`.
+    pub fn new(name: TopicName) -> Self {
+        Self {
+            name,
+            schema_settings: None,
+        }
+    }
+
+    /// Sets schema settings on this `TopicInfo`.
+    pub fn with_schema_settings(
+        mut self,
+        schema_settings: Option<crate::pubsub_proto::SchemaSettings>,
+    ) -> Self {
+        self.schema_settings = schema_settings;
+        self
+    }
 }
 
 impl Topic {
     /// Creates a new `Topic`.
     pub fn new(delegate: TopicManagerDelegate, info: TopicInfo, internal_id: u32) -> Self {
         let name = info.name.clone();
-        let sender = TopicActor::start(delegate, info, internal_id);
+        let sender = TopicActor::start(delegate, info.clone(), internal_id);
         Self {
             name,
+            info,
             internal_id,
             sender,
         }
@@ -143,12 +169,5 @@ impl PartialOrd<Self> for Topic {
 impl Ord for Topic {
     fn cmp(&self, other: &Self) -> Ordering {
         self.internal_id.cmp(&other.internal_id)
-    }
-}
-
-impl TopicInfo {
-    /// Creates a new `TopicInfo`.
-    pub fn new(name: TopicName) -> Self {
-        Self { name }
     }
 }

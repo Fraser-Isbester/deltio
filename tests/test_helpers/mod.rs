@@ -1,5 +1,6 @@
 use deltio::Deltio;
 use deltio::pubsub_proto::publisher_client::PublisherClient;
+use deltio::pubsub_proto::schema_service_client::SchemaServiceClient;
 use deltio::pubsub_proto::subscriber_client::SubscriberClient;
 use deltio::pubsub_proto::{
     AcknowledgeRequest, DeadLetterPolicy as DeadLetterPolicyProto, ModifyAckDeadlineRequest,
@@ -41,6 +42,9 @@ pub struct TestHost {
 
     /// The Subscriber client.
     pub subscriber: SubscriberClient<Channel>,
+
+    /// The Schema client.
+    pub schema: SchemaServiceClient<Channel>,
 
     sock_file: String,
 
@@ -120,10 +124,12 @@ impl TestHost {
 
         // Create the clients.
         let publisher = PublisherClient::new(channel.clone());
-        let subscriber = SubscriberClient::new(channel);
+        let subscriber = SubscriberClient::new(channel.clone());
+        let schema = SchemaServiceClient::new(channel);
         Ok(Self {
             publisher,
             subscriber,
+            schema,
             sock_file,
             join_handle,
             shutdown_send,

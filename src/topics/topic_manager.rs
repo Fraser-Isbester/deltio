@@ -37,9 +37,18 @@ impl TopicManager {
 
     /// Create a new topic.
     pub fn create_topic(&self, name: TopicName) -> Result<Arc<Topic>, CreateTopicError> {
+        self.create_topic_with_schema(name, None)
+    }
+
+    /// Create a new topic with optional schema settings.
+    pub fn create_topic_with_schema(
+        &self,
+        name: TopicName,
+        schema_settings: Option<crate::pubsub_proto::SchemaSettings>,
+    ) -> Result<Arc<Topic>, CreateTopicError> {
         let delegate = TopicManagerDelegate::new(Arc::clone(&self.state));
         let mut state = self.state.write();
-        state.create_topic(name, delegate)
+        state.create_topic(name, schema_settings, delegate)
     }
 
     /// Gets a topic.
@@ -117,10 +126,11 @@ impl State {
     pub fn create_topic(
         &mut self,
         name: TopicName,
+        schema_settings: Option<crate::pubsub_proto::SchemaSettings>,
         delegate: TopicManagerDelegate,
     ) -> Result<Arc<Topic>, CreateTopicError> {
         if let Entry::Vacant(entry) = self.topics.entry(name.clone()) {
-            let topic_info = TopicInfo::new(name);
+            let topic_info = TopicInfo::new(name).with_schema_settings(schema_settings);
             self.next_id += 1;
             let internal_id = self.next_id;
             let topic = Arc::new(Topic::new(delegate, topic_info, internal_id));
